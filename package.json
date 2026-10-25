@@ -7,17 +7,24 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "postbuild": "node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --import tsx --test test/*.test.ts",
+    "chat": "tsx src/cli.ts chat",
+    "start": "tsx src/cli.ts",
+    "build:bin": "bun build --compile src/cli.ts --outfile release/pi-managed-agents",
     "demo": "tsx examples/demo.ts",
     "demo:crash": "tsx examples/crash-recovery.ts",
     "demo:security": "tsx examples/security-demo.ts",
     "demo:many": "tsx examples/many-brains.ts",
-    "bench": "tsx src/bench/ttft.ts"
+    "bench": "tsx src/bench/ttft.ts",
+    "prepack": "npm run build"
   },
   "keywords": [
     "agents",
@@ -41,5 +48,10 @@
   },
   "bin": {
     "pi-managed-agents": "./dist/cli.js"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zzszmyf/pi-managed-agents.git"
+  },
+  "homepage": "https://github.com/zzszmyf/pi-managed-agents#readme"
 }

@@ -174,9 +174,10 @@ export function formatTtftReport(report: TtftReport): string {
   ].join("\n");
 }
 
+const entry = process.argv[1] ?? "";
 const invokedDirectly =
-  process.argv[1] !== undefined &&
-  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+  /(?:^|[\\/])(?:src|dist)[\\/]bench[\\/]ttft\.(?:ts|js)$/.test(entry) &&
+  import.meta.url === pathToFileURL(path.resolve(entry)).href;
 
 if (invokedDirectly) {
   const report = await benchmarkTtft();

@@ -40,6 +40,12 @@ export interface HarnessOptions {
   sandboxResources?: SandboxResources;
   /** Called when the first text token of a run arrives. */
   onFirstToken?: (milliseconds: number) => void;
+  /** Called for every streamed assistant text delta. */
+  onTextDelta?: (delta: string) => void;
+  /** Called when a tool call starts executing. */
+  onToolStart?: (toolName: string, args: unknown) => void;
+  /** Called when a tool call finishes. */
+  onToolEnd?: (toolName: string, ok: boolean, output: string) => void;
   /** Test hook: observe every agent event after it has been recorded. */
   onEvent?: (event: AgentEvent) => void | Promise<void>;
 }
@@ -62,6 +68,9 @@ export class Harness {
   private readonly eagerProvision: boolean;
   private readonly sandboxResources?: SandboxResources;
   private readonly onFirstToken?: (milliseconds: number) => void;
+  private readonly onTextDelta?: (delta: string) => void;
+  private readonly onToolStart?: (toolName: string, args: unknown) => void;
+  private readonly onToolEnd?: (toolName: string, ok: boolean, output: string) => void;
   private readonly onEvent?: (event: AgentEvent) => void | Promise<void>;
 
   constructor(options: HarnessOptions) {
@@ -75,6 +84,9 @@ export class Harness {
     this.eagerProvision = options.eagerProvision ?? false;
     this.sandboxResources = options.sandboxResources;
     this.onFirstToken = options.onFirstToken;
+    this.onTextDelta = options.onTextDelta;
+    this.onToolStart = options.onToolStart;
+    this.onToolEnd = options.onToolEnd;
     this.onEvent = options.onEvent;
   }
 
@@ -230,13 +242,16 @@ export class Harness {
 
     agent.subscribe(async (event) => {
       await this.recordEvent(sessionId, runId, event);
-      if (
-        !firstTokenSeen &&
-        event.type === "message_update" &&
-        event.assistantMessageEvent.type === "text_delta"
-      ) {
-        firstTokenSeen = true;
-        setFirstToken(performance.now() - startedAt);
+      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+        if (!firstTokenSeen) {
+          firstTokenSeen = true;
+          setFirstToken(performance.now() - startedAt);
+        }
+        this.onTextDelta?.(event.assistantMessageEvent.delta);
+      } else if (event.type === "tool_execution_start") {
+        this.onToolStart?.(event.toolName, event.args);
+      } else if (event.type === "tool_execution_end") {
+        this.onToolEnd?.(event.toolName, !event.isError, toolResultText(event.result));
       }
       await this.onEvent?.(event);
     });

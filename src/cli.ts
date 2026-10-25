@@ -11,6 +11,7 @@ import {
 import { FileSessionStore } from "./session/store.js";
 import { WindowContextPolicy } from "./session/context.js";
 import { Harness } from "./harness/harness.js";
+import { InteractiveShell } from "./interactive.js";
 import { createFauxRuntime } from "./model/faux.js";
 import { createRealRuntime, createAnthropicCompatibleRuntime, type RealProvider } from "./model/real.js";
 import { LocalSandbox } from "./sandbox/local.js";
@@ -22,6 +23,8 @@ import { formatTtftReport, benchmarkTtft } from "./bench/ttft.js";
 const HELP = `pi-managed-agents
 
 Usage:
+  pi-managed-agents                     start interactive mode
+  pi-managed-agents chat [options]      start interactive mode
   pi-managed-agents run <task> [options]
   pi-managed-agents resume <sessionId> [options]
   pi-managed-agents sessions [options]
@@ -113,14 +116,42 @@ async function main(): Promise<void> {
     },
   });
 
+  const root = sessionRoot(values.root);
+  const store = new FileSessionStore(root);
+
   const command = positionals[0];
-  if (values.help || !command) {
+  if (values.help) {
     console.log(HELP);
     return;
   }
 
-  const root = sessionRoot(values.root);
-  const store = new FileSessionStore(root);
+  if (command === "chat" || (!command && process.stdin.isTTY)) {
+    const runtime = makeModel(values.provider, values.model, "run", values["base-url"]);
+    if (values.session && !(await store.exists(values.session))) {
+      throw new Error(`Unknown session: ${values.session}`);
+    }
+    const modelLabel =
+      values.provider === "faux"
+        ? "faux (deterministic echo)"
+        : `${values.model ?? "default"}${values["base-url"] ? ` @ ${values["base-url"]}` : ""}`;
+    const shell = new InteractiveShell({
+      store,
+      runtime,
+      makeSandbox: (sessionId) => makeSandbox(values.sandbox, sessionId),
+      contextWindow: Number(values.context),
+      eagerProvision: values.eager,
+      ...(values.session ? { sessionId: values.session } : {}),
+      modelLabel,
+      sandboxLabel: values.sandbox,
+    });
+    await shell.start();
+    return;
+  }
+
+  if (!command) {
+    console.log(HELP);
+    return;
+  }
 
   if (command === "sessions") {
     const sessions = await store.listSessions();

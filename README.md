@@ -61,6 +61,55 @@ npm test              # 23 tests
 
 Node 22.19+ is required (the pi packages' engine constraint).
 
+## Build and install the CLI
+
+```bash
+npm install
+npm run build          # emits dist/, makes dist/cli.js executable
+npm link               # installs the `pi-managed-agents` command globally
+# or: npm install -g .
+pi-managed-agents      # starts interactive mode
+```
+
+To hand someone a tarball instead:
+
+```bash
+npm pack
+npm install -g ./pi-managed-agents-0.1.0.tgz
+pi-managed-agents --help
+```
+
+For a standalone binary with no Node runtime (build it on the OS/arch you want
+to run):
+
+```bash
+npm install -g bun     # only needed for this option
+npm run build:bin      # release/pi-managed-agents, roughly 100 MB
+./release/pi-managed-agents
+```
+
+Bun can cross-compile with `--target=bun-linux-x64`, `bun-darwin-arm64`, etc.
+See `bun build --compile --help`.
+
+## Interactive mode
+
+Running `pi-managed-agents` with no arguments starts an interactive shell. It
+streams assistant text, prints tool activity, and keeps one session and one
+sandbox alive across turns.
+
+```bash
+# deterministic faux echo, no API key
+npm run chat
+
+# real Anthropic-compatible endpoint
+pi-managed-agents chat --provider anthropic --model deepseek-flash[1m] \
+  --base-url https://api.deepseek.com/anthropic
+```
+
+Commands: `/help`, `/new`, `/session`, `/sessions`, `/events [n]`, `/model`,
+`/quit`. With `--session <id>` the shell reuses an existing session and wakes a
+new harness automatically if the last turn was interrupted mid-tool-call.
+
 ### CLI
 
 ```bash

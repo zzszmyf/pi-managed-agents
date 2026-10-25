@@ -48,6 +48,52 @@ npm test              # 23 个测试
 | git token 只在初始化时用一次 | `src/credentials/git.ts` |
 | many brains / many hands | `examples/many-brains.ts` |
 
+## 构建并安装 CLI
+
+需要 Node 22.19+。
+
+```bash
+npm install
+npm run build          # 生成 dist/，并给 dist/cli.js 加可执行权限
+npm link               # 全局安装 `pi-managed-agents` 命令
+# 或者：npm install -g .
+pi-managed-agents      # 直接进入交互模式
+```
+
+想发给别人一个压缩包：
+
+```bash
+npm pack
+npm install -g ./pi-managed-agents-0.1.0.tgz
+pi-managed-agents --help
+```
+
+想要不依赖 Node 的单文件二进制（在目标系统和架构上构建）：
+
+```bash
+npm install -g bun     # 只有这个方案需要
+npm run build:bin      # 生成 release/pi-managed-agents，约 100 MB
+./release/pi-managed-agents
+```
+
+Bun 可以用 `--target=bun-linux-x64`、`bun-darwin-arm64` 等参数交叉编译。
+
+## 交互模式
+
+不带参数运行 `pi-managed-agents` 就进入交互模式：流式输出 assistant 文本、实时显示 tool 调用，并在多轮之间保持同一个 session 和 sandbox。
+
+```bash
+# 不需要 key，faux 模型会回显输入
+npm run chat
+
+# 真实 Anthropic 兼容端点
+pi-managed-agents chat --provider anthropic --model deepseek-flash[1m] \
+  --base-url https://api.deepseek.com/anthropic
+```
+
+交互命令：`/help`、`/new`、`/session`、`/sessions`、`/events [n]`、`/model`、`/quit`。
+加 `--session <id>` 可以接着已有会话聊；如果上一轮停在 tool call 中间，启动时会自动 `wake`。
+
 ## 常用命令
 
 ```bash
