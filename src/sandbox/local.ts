@@ -24,6 +24,14 @@ const DEFAULT_MAX_FILE_BYTES = 512 * 1024;
 export interface LocalSandboxOptions {
   /** Directory that acts as the sandbox root. Defaults to a temp directory. */
   rootDir?: string;
+  /**
+   * Remove the root directory on destroy.
+   *
+   * Defaults to true when the sandbox created a temp directory, and false when
+   * the caller supplied `rootDir`. Routines often point the sandbox at a real
+   * workspace; destroying the sandbox must not delete that workspace.
+   */
+  destroyRoot?: boolean;
   /** Simulated provisioning latency, useful for TTFT experiments. */
   provisionDelayMs?: number;
   /** Per-command timeout. Default 30s. */
@@ -44,6 +52,7 @@ export class LocalSandbox implements Sandbox {
   readonly id: string;
   readonly rootDir: string;
   private alive = false;
+  private readonly ownsRoot: boolean;
   private readonly provisionDelayMs: number;
   private readonly commandTimeoutMs: number;
   private readonly baseEnv: Record<string, string>;
@@ -53,6 +62,7 @@ export class LocalSandbox implements Sandbox {
     this.id = `sbx_${randomUUID()}`;
     this.rootDir =
       options.rootDir ?? path.join(os.tmpdir(), "pi-managed-agents", this.id);
+    this.ownsRoot = options.destroyRoot ?? options.rootDir === undefined;
     this.provisionDelayMs = options.provisionDelayMs ?? 0;
     this.commandTimeoutMs = options.commandTimeoutMs ?? 30_000;
     this.baseEnv = { ...(options.env ?? {}) };
@@ -74,7 +84,9 @@ export class LocalSandbox implements Sandbox {
 
   async destroy(): Promise<void> {
     this.alive = false;
-    await fs.rm(this.rootDir, { recursive: true, force: true });
+    if (this.ownsRoot) {
+      await fs.rm(this.rootDir, { recursive: true, force: true });
+    }
   }
 
   async execute(name: string, input: Record<string, unknown>): Promise<HandResult> {

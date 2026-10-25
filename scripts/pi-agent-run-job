@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+# pi-agent-run-job — run one routine with pi-managed-agents.
+#
+# This is deliberately shaped like this machine's existing
+# ~/.local/bin/cloud-agent-run-job:
+#   * job definition: ~/.config/pi-agent/jobs/<name>.env
+#   * per-job flock, timeout, log file and retention
+#   * PUSH_ON / [SILENT] / idempotency key
+#   * result pushed through lark-cli
+#
+# The difference is the agent: instead of `claude -p`, it runs
+# `pi-managed-agents run` against a persistent routine session.
+#
+# Usage: pi-agent-run-job <job-name>
+set -euo pipefail
+
+JOB="${1:-}"
+if [[ -z "$JOB" ]]; then
+  echo "usage: pi-agent-run-job <job-name>" >&2
+  exit 2
+fi
+
+# Resolve symlinks: the scripts are commonly linked into ~/.local/bin.
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+
+JOBS_DIR="${PI_AGENT_JOBS_DIR:-$HOME/.config/pi-agent/jobs}"
+JOB_FILE="$JOBS_DIR/$JOB.env"
+if [[ ! -f "$JOB_FILE" ]]; then
+  echo "job not found: $JOB_FILE" >&2
+  exit 2
+fi
+# shellcheck disable=SC1090
+source "$JOB_FILE"
+
+WORKSPACE="${WORKSPACE:-$HOME/agent-workspace}"
+TARGET_TYPE="${TARGET_TYPE:-user}"
+TARGET_ID="${TARGET_ID:-}"
+TIMEOUT="${TIMEOUT:-15m}"
+PUSH_ON="${PUSH_ON:-always}"
+MAX_CHARS="${MAX_CHARS:-3500}"
+ALLOWED_TOOLS="${ALLOWED_TOOLS:-Read Grep Glob}"
+SILENT_MARKER="${SILENT_MARKER:-[SILENT]}"
+LOG_KEEP_DAYS="${LOG_KEEP_DAYS:-14}"
+SANDBOX="${SANDBOX:-local}"
+CONTEXT_WINDOW="${CONTEXT_WINDOW:-40}"
+EAGER="${EAGER:-0}"
+
+# A routine gets its own durable session by default. Re-running the job
+# appends to the same log, so the agent can see what it did last time.
+SESSION_ID="${SESSION_ID:-routine_${JOB//[^A-Za-z0-9_-]/_}}"
+
+# Agent credentials. This file is already used by the existing cron runner.
+AGENT_ENV="${AGENT_ENV:-$HOME/.config/lark-channel/agent.env}"
+if [[ -f "$AGENT_ENV" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$AGENT_ENV"
+  set +a
+fi
+
+# Bridge-bound lark-cli environment, same as cloud-agent-run-job.
+export LARK_CHANNEL=1
+export LARK_CHANNEL_HOME="${LARK_CHANNEL_HOME:-$HOME/.lark-channel}"
+export LARK_CHANNEL_PROFILE="${LARK_CHANNEL_PROFILE:-claude}"
+export LARK_CHANNEL_CONFIG="$LARK_CHANNEL_HOME/profiles/$LARK_CHANNEL_PROFILE/lark-cli-source/config.json"
+export LARKSUITE_CLI_CONFIG_DIR="$LARK_CHANNEL_HOME/profiles/$LARK_CHANNEL_PROFILE/lark-cli"
+
+# Model defaults: use the same Anthropic-compatible endpoint as Claude Code.
+if [[ -z "${PROVIDER:-}" ]]; then
+  if [[ -n "${ANTHROPIC_AUTH_TOKEN:-}" || -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    PROVIDER="anthropic"
+  else
+    PROVIDER="faux"
+  fi
+fi
+MODEL="${MODEL:-${ANTHROPIC_MODEL:-}}"
+BASE_URL="${BASE_URL:-${ANTHROPIC_BASE_URL:-}}"
+
+if [[ -n "${PI_AGENT_CMD:-}" ]]; then
+  read -r -a AGENT_CMD <<<"$PI_AGENT_CMD"
+elif command -v pi-managed-agents >/dev/null 2>&1; then
+  AGENT_CMD=("$(command -v pi-managed-agents)")
+else
+  ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+  if [[ ! -f "$ROOT/dist/cli.js" ]]; then
+    echo "pi-managed-agents not found; run 'npm run build' or set PI_AGENT_CMD" >&2
+    exit 2
+  fi
+  AGENT_CMD=(node "$ROOT/dist/cli.js")
+fi
+
+LARK_CLI_BIN="${LARK_CLI_BIN:-$(command -v lark-cli || true)}"
+
+hands_for_tools() {
+  local token hands=""
+  for token in $ALLOWED_TOOLS; do
+    case "$token" in
+      bypass|"*"|all)
+        hands="bash,read_file,write_file,list_files"
+        break
+        ;;
+      Bash|bash) hands+=",bash" ;;
+      Read|Grep|Glob|read_file|list_files) hands+=",read_file,list_files" ;;
+      Write|Edit|write_file) hands+=",write_file" ;;
+    esac
+  done
+  hands="${hands#,}"
+  if [[ -z "$hands" ]]; then
+    hands="read_file,list_files"
+  fi
+  printf '%s\n' "${hands//,/$'\n'}" | awk 'NF && !seen[$0]++' | paste -sd, -
+}
+
+HANDS="$(hands_for_tools)"
+
+if [[ -n "${PROMPT_FILE:-}" ]]; then
+  PROMPT="$(cat "$PROMPT_FILE")"
+elif [[ -n "${PROMPT:-}" ]]; then
+  PROMPT="$PROMPT"
+else
+  echo "PROMPT or PROMPT_FILE is required in $JOB_FILE" >&2
+  exit 2
+fi
+
+if [[ ! -d "$WORKSPACE" ]]; then
+  echo "workspace does not exist: $WORKSPACE" >&2
+  exit 2
+fi
+
+STATE_DIR="${PI_AGENT_STATE_DIR:-$HOME/.local/state/pi-agent/jobs}/$JOB"
+SESSIONS_DIR="${PI_AGENT_SESSIONS_DIR:-$HOME/.local/state/pi-agent/sessions}"
+mkdir -p "$STATE_DIR" "$SESSIONS_DIR"
+
+exec 9>"$STATE_DIR/.lock"
+if ! flock -n 9; then
+  echo "job already running: $JOB" >&2
+  exit 0
+fi
+
+TS="$(date +%Y%m%d-%H%M%S)"
+LOG_FILE="$STATE_DIR/$TS.log"
+START="$(date +%s)"
+
+ARGS=(
+  run "$PROMPT"
+  --session "$SESSION_ID"
+  --create-session
+  --root "$SESSIONS_DIR"
+  --sandbox "$SANDBOX"
+  --sandbox-root "$WORKSPACE"
+  --context "$CONTEXT_WINDOW"
+  --allowed-hands "$HANDS"
+  --json
+)
+[[ -n "$PROVIDER" ]] && ARGS+=(--provider "$PROVIDER")
+[[ -n "$MODEL" ]] && ARGS+=(--model "$MODEL")
+[[ -n "$BASE_URL" ]] && ARGS+=(--base-url "$BASE_URL")
+[[ "$EAGER" == "1" ]] && ARGS+=(--eager)
+
+set +e
+(
+  cd "$WORKSPACE"
+  timeout "$TIMEOUT" "${AGENT_CMD[@]}" "${ARGS[@]}"
+) >"$LOG_FILE" 2>&1
+RC=$?
+set -e
+
+END="$(date +%s)"
+DURATION=$((END - START))
+OUTPUT="$(cat "$LOG_FILE")"
+
+# --json prints one result object. Pull out finalMessage/status without
+# leaking the rest of the log into the push.
+FINAL="$(
+  printf '%s' "$OUTPUT" | node -e '
+    let s = "";
+    process.stdin.on("data", (d) => (s += d));
+    process.stdin.on("end", () => {
+      try {
+        const j = JSON.parse(s);
+        if (typeof j.finalMessage === "string") process.stdout.write(j.finalMessage);
+      } catch {}
+    });
+  ' 2>/dev/null || true
+)"
+STATUS="$(
+  printf '%s' "$OUTPUT" | node -e '
+    let s = "";
+    process.stdin.on("data", (d) => (s += d));
+    process.stdin.on("end", () => {
+      try {
+        const j = JSON.parse(s);
+        if (typeof j.status === "string") process.stdout.write(j.status);
+      } catch {}
+    });
+  ' 2>/dev/null || true
+)"
+
+BODY="${FINAL:-$OUTPUT}"
+BODY="$(printf '%s' "$BODY" | sed -r 's/\x1B\[[0-9;]*[mK]//g' || true)"
+
+SHOULD_PUSH=0
+case "$PUSH_ON" in
+  always) SHOULD_PUSH=1 ;;
+  never) SHOULD_PUSH=0 ;;
+  failure)
+    if (( RC != 0 )) || [[ "$STATUS" != "completed" ]]; then SHOULD_PUSH=1; fi
+    ;;
+  nonempty)
+    [[ -n "${BODY//[[:space:]]/}" ]] && SHOULD_PUSH=1
+    ;;
+  *)
+    echo "invalid PUSH_ON: $PUSH_ON" >&2
+    ;;
+esac
+
+if [[ -n "$SILENT_MARKER" ]]; then
+  if [[ "$BODY" == *"$SILENT_MARKER"* || "$OUTPUT" == *"$SILENT_MARKER"* ]]; then
+    SHOULD_PUSH=0
+  fi
+fi
+
+trim_output() {
+  local s="$1"
+  if (( ${#s} > MAX_CHARS )); then
+    printf '%s\n\n…（已截断，完整日志：%s）' "${s:0:MAX_CHARS}" "$LOG_FILE"
+  else
+    printf '%s' "$s"
+  fi
+}
+
+if (( SHOULD_PUSH )); then
+  if (( RC == 0 )) && [[ "$STATUS" == "completed" ]]; then
+    HEADER="✅ 例行任务 $JOB 完成（${DURATION}s）"
+  else
+    HEADER="❌ 例行任务 $JOB 失败（exit $RC，${DURATION}s）"
+  fi
+  if [[ -z "${BODY//[[:space:]]/}" ]]; then
+    BODY="（无输出）"
+  else
+    BODY="$(trim_output "$BODY")"
+  fi
+  MSG="$HEADER
+$BODY"
+
+  if [[ "${PUSH_DRY_RUN:-0}" == "1" || -z "$LARK_CLI_BIN" || -z "$TARGET_ID" ]]; then
+    echo "=== push dry-run ==="
+    echo "$MSG"
+    echo "==================="
+    if [[ -z "$LARK_CLI_BIN" && "${PUSH_DRY_RUN:-0}" != "1" ]]; then
+      echo "lark-cli not found; message not sent" >&2
+    elif [[ -z "$TARGET_ID" && "${PUSH_DRY_RUN:-0}" != "1" ]]; then
+      echo "TARGET_ID is empty; message not sent" >&2
+    fi
+  else
+    PUSH_ARGS=(im +messages-send)
+    if [[ "$TARGET_TYPE" == "chat" ]]; then
+      PUSH_ARGS+=(--chat-id "$TARGET_ID")
+    else
+      PUSH_ARGS+=(--user-id "$TARGET_ID")
+    fi
+    PUSH_ARGS+=(--text "$MSG" --idempotency-key "${JOB:0:20}-$TS")
+    if ! "$LARK_CLI_BIN" "${PUSH_ARGS[@]}" >>"$LOG_FILE" 2>&1; then
+      echo "failed to push result to Feishu (see $LOG_FILE)" >&2
+    fi
+  fi
+fi
+
+find "$STATE_DIR" -maxdepth 1 -name '*.log' -mtime +"$LOG_KEEP_DAYS" -delete 2>/dev/null || true
+
+echo "[$JOB] status=${STATUS:-unknown} exit=$RC duration=${DURATION}s session=$SESSION_ID log=$LOG_FILE"
+exit "$RC"

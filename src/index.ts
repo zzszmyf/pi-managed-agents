@@ -4,6 +4,7 @@ export * from "./session/format.js";
 export * from "./session/store.js";
 export * from "./session/context.js";
 export * from "./sandbox/sandbox.js";
+export * from "./sandbox/policy.js";
 export * from "./sandbox/local.js";
 export * from "./sandbox/docker.js";
 export * from "./sandbox/runtime.js";

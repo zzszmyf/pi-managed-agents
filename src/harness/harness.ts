@@ -18,6 +18,7 @@ import type { SessionStore } from "../session/store.js";
 import type { ContextPolicy } from "../session/context.js";
 import { WindowContextPolicy } from "../session/context.js";
 import type { Sandbox } from "../sandbox/sandbox.js";
+import { PolicySandbox } from "../sandbox/policy.js";
 import type { RunResult, SandboxResources } from "../types.js";
 import { createExecuteTool, EXECUTE_TOOL_NAME } from "./tools.js";
 
@@ -38,6 +39,8 @@ export interface HarnessOptions {
   /** Provision the sandbox before the first model request. Default false (lazy). */
   eagerProvision?: boolean;
   sandboxResources?: SandboxResources;
+  /** Restrict the hands the model can call. Default: all four local hands. */
+  allowedHands?: readonly string[];
   /** Called when the first text token of a run arrives. */
   onFirstToken?: (milliseconds: number) => void;
   /** Called for every streamed assistant text delta. */
@@ -67,6 +70,7 @@ export class Harness {
   private readonly contextPolicy: ContextPolicy;
   private readonly eagerProvision: boolean;
   private readonly sandboxResources?: SandboxResources;
+  private readonly allowedHands?: readonly string[];
   private readonly onFirstToken?: (milliseconds: number) => void;
   private readonly onTextDelta?: (delta: string) => void;
   private readonly onToolStart?: (toolName: string, args: unknown) => void;
@@ -76,7 +80,10 @@ export class Harness {
   constructor(options: HarnessOptions) {
     this.id = options.harnessId ?? `harness_${randomUUID()}`;
     this.sessionStore = options.sessionStore;
-    this.sandbox = options.sandbox;
+    this.sandbox = options.allowedHands
+      ? new PolicySandbox(options.sandbox, options.allowedHands)
+      : options.sandbox;
+    this.allowedHands = options.allowedHands;
     this.model = options.model;
     this.streamFn = options.streamFn;
     this.systemPrompt = options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
@@ -226,7 +233,7 @@ export class Harness {
     startedAt: number,
     setFirstToken: (milliseconds: number) => void,
   ): Agent {
-    const tools: AgentTool[] = [createExecuteTool(this.sandbox)];
+    const tools: AgentTool[] = [createExecuteTool(this.sandbox, this.allowedHands)];
     let firstTokenSeen = false;
     const agent = new Agent({
       initialState: {

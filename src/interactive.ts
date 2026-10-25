@@ -16,6 +16,7 @@ export interface InteractiveOptions {
   makeSandbox: (sessionId: string) => SandboxRuntime;
   contextWindow: number;
   eagerProvision: boolean;
+  allowedHands?: readonly string[];
   sessionId?: string;
   modelLabel: string;
   sandboxLabel: string;
@@ -151,6 +152,7 @@ export class InteractiveShell {
       streamFn: this.options.runtime.streamFn,
       contextPolicy: new WindowContextPolicy(this.options.contextWindow),
       eagerProvision: this.options.eagerProvision,
+      ...(this.options.allowedHands ? { allowedHands: this.options.allowedHands } : {}),
       onTextDelta: (delta) => {
         this.streamedThisTurn = true;
         stdout.write(delta);

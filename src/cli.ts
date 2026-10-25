@@ -36,7 +36,10 @@ Options:
   --model <id>                        Model id for real providers
   --base-url <url>                    Anthropic-compatible endpoint (requires --model)
   --session <id>                      Reuse an existing session instead of creating one
+  --create-session                    Create --session if it does not exist
+  --allowed-hands <list>              Restrict hands, e.g. read_file,list_files
   --sandbox <local|docker>            Hand implementation (default: local)
+  --sandbox-root <dir>                Local sandbox root (default: a temp dir per session)
   --eager                             Provision the sandbox before the first model request
   --context <n>                       Context window in messages (default: 40)
   --root <dir>                        Session directory (default: .sessions)
@@ -49,6 +52,12 @@ function sessionRoot(value: string | undefined): string {
 
 function sandboxRoot(sessionId: string): string {
   return path.join(os.tmpdir(), "pi-managed-agents", sessionId);
+}
+
+function parseHands(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  const hands = value.split(/[\s,]+/).filter(Boolean);
+  return hands.length > 0 ? hands : undefined;
 }
 
 function makeModel(
@@ -85,12 +94,16 @@ function makeModel(
   return createRealRuntime(provider as RealProvider, modelId);
 }
 
-function makeSandbox(mode: string, sessionId: string): SandboxRuntime {
+function makeSandbox(mode: string, sessionId: string, rootOverride?: string): SandboxRuntime {
   const provider =
     mode === "docker"
       ? new FactorySandboxProvider(() => new DockerSandbox())
       : new FactorySandboxProvider(
-          () => new LocalSandbox({ rootDir: sandboxRoot(sessionId) }),
+          () =>
+            new LocalSandbox({
+              rootDir: rootOverride ?? sandboxRoot(sessionId),
+              destroyRoot: rootOverride === undefined,
+            }),
         );
   return new SandboxRuntime({ provider });
 }
@@ -107,7 +120,10 @@ async function main(): Promise<void> {
       model: { type: "string" },
       "base-url": { type: "string" },
       session: { type: "string" },
+      "create-session": { type: "boolean", default: false },
+      "allowed-hands": { type: "string" },
       sandbox: { type: "string", default: "local" },
+      "sandbox-root": { type: "string" },
       eager: { type: "boolean", default: false },
       context: { type: "string", default: "40" },
       root: { type: "string" },
@@ -137,10 +153,14 @@ async function main(): Promise<void> {
     const shell = new InteractiveShell({
       store,
       runtime,
-      makeSandbox: (sessionId) => makeSandbox(values.sandbox, sessionId),
+      makeSandbox: (sessionId) =>
+        makeSandbox(values.sandbox, sessionId, values["sandbox-root"]),
       contextWindow: Number(values.context),
       eagerProvision: values.eager,
       ...(values.session ? { sessionId: values.session } : {}),
+      ...(parseHands(values["allowed-hands"])
+        ? { allowedHands: parseHands(values["allowed-hands"])! }
+        : {}),
       modelLabel,
       sandboxLabel: values.sandbox,
     });
@@ -191,13 +211,18 @@ async function main(): Promise<void> {
     const task = positionals.slice(1).join(" ").trim();
     if (!task) throw new Error("run requires a task");
     const session = values.session
-      ? { sessionId: values.session }
+      ? (await store.exists(values.session))
+        ? { sessionId: values.session }
+        : values["create-session"]
+          ? await store.createSession({ sessionId: values.session })
+          : (() => {
+              throw new Error(
+                `Unknown session: ${values.session}. Pass --create-session to create it.`,
+              );
+            })()
       : await store.createSession();
-    if (values.session && !(await store.exists(values.session))) {
-      throw new Error(`Unknown session: ${values.session}`);
-    }
     const runtime = makeModel(values.provider, values.model, "run", values["base-url"]);
-    const sandbox = makeSandbox(values.sandbox, session.sessionId);
+    const sandbox = makeSandbox(values.sandbox, session.sessionId, values["sandbox-root"]);
     const harness = new Harness({
       sessionStore: store,
       sandbox,
@@ -205,6 +230,9 @@ async function main(): Promise<void> {
       streamFn: runtime.streamFn,
       contextPolicy: new WindowContextPolicy(Number(values.context)),
       eagerProvision: values.eager,
+      ...(parseHands(values["allowed-hands"])
+        ? { allowedHands: parseHands(values["allowed-hands"])! }
+        : {}),
     });
     try {
       const result = await harness.run(session.sessionId, task);
@@ -230,13 +258,16 @@ async function main(): Promise<void> {
     if (!sessionId) throw new Error("resume requires a session id");
     if (!(await store.exists(sessionId))) throw new Error(`Unknown session: ${sessionId}`);
     const runtime = makeModel(values.provider, values.model, "resume", values["base-url"]);
-    const sandbox = makeSandbox(values.sandbox, sessionId);
+    const sandbox = makeSandbox(values.sandbox, sessionId, values["sandbox-root"]);
     const harness = new Harness({
       sessionStore: store,
       sandbox,
       model: runtime.model,
       streamFn: runtime.streamFn,
       contextPolicy: new WindowContextPolicy(Number(values.context)),
+      ...(parseHands(values["allowed-hands"])
+        ? { allowedHands: parseHands(values["allowed-hands"])! }
+        : {}),
     });
     try {
       const result = await harness.wake(sessionId);

@@ -1,0 +1,331 @@
+#!/usr/bin/env bash
+# pi-agent-schedule — systemd-timer routines for pi-managed-agents.
+#
+# This is a small sibling of the machine's existing cloud-agent-schedule.
+# It keeps its own jobs directory, service template and timer prefix so it
+# never disturbs the existing cloud-agent jobs.
+#
+# Usage:
+#   pi-agent-schedule add <name> --calendar "<OnCalendar>" --prompt "<text>" [options]
+#   pi-agent-schedule list
+#   pi-agent-schedule run <name>
+#   pi-agent-schedule logs <name> [lines]
+#   pi-agent-schedule enable|disable <name>
+#   pi-agent-schedule remove <name> [--yes]
+#   pi-agent-schedule sync
+set -euo pipefail
+
+JOBS_DIR="${PI_AGENT_JOBS_DIR:-$HOME/.config/pi-agent/jobs}"
+UNIT_DIR="$HOME/.config/systemd/user"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNNER="${PI_AGENT_RUNNER:-$SCRIPT_DIR/pi-agent-run-job}"
+SERVICE_TEMPLATE="$UNIT_DIR/pi-agent-job@.service"
+DEFAULT_TARGET="${PI_AGENT_DEFAULT_TARGET:-}"
+
+die() { echo "error: $*" >&2; exit 2; }
+
+usage() {
+  cat <<'EOF'
+Usage:
+  pi-agent-schedule add <name> --calendar "<systemd OnCalendar>" --prompt "<text>" [options]
+  pi-agent-schedule list
+  pi-agent-schedule run <name>
+  pi-agent-schedule logs <name> [lines]
+  pi-agent-schedule enable|disable <name>
+  pi-agent-schedule remove <name> [--yes]
+  pi-agent-schedule sync
+
+add options:
+  --calendar <expr>     systemd OnCalendar, e.g. "*-*-* 09:00:00"
+  --prompt <text>       prompt text (or --prompt-file)
+  --prompt-file <path>  read the prompt from a file
+  --workspace <path>    sandbox root and working directory (default: ~/agent-workspace)
+  --target <spec>       user:ou_xxx (default: PI_AGENT_DEFAULT_TARGET) or chat:oc_xxx
+  --tools <list>        Claude-style tool list: "Read Grep Glob", "Bash Read", "bypass"
+  --timeout <duration>  per-run timeout (default: 15m)
+  --push <mode>         always | failure | nonempty | never (default: always)
+  --silent-marker <s>   skip push if output contains this (default: [SILENT])
+  --provider <name>     faux | anthropic | openai (default: env-based)
+  --model <id>          model id (default: ANTHROPIC_MODEL)
+  --base-url <url>      Anthropic-compatible endpoint (default: ANTHROPIC_BASE_URL)
+  --session <id>        persistent session id (default: routine_<name>)
+  --sandbox <mode>      local | docker (default: local)
+  --context <n>         context window in messages (default: 40)
+  --eager               provision the sandbox before the first request
+  --no-enable           write files but do not enable the timer
+
+Examples:
+  pi-agent-schedule add daily-health \
+    --calendar "*-*-* 09:00:00" \
+    --prompt "检查磁盘/内存/负载，正常只回复 [SILENT]" \
+    --tools "Bash Read Grep Glob" --push failure
+
+  pi-agent-schedule add morning-brief \
+    --calendar "Mon..Fri *-*-* 08:30:00" \
+    --prompt-file ./brief.prompt.txt \
+    --tools "Read Grep Glob" --push always
+EOF
+}
+
+ensure_dirs() { mkdir -p "$JOBS_DIR" "$UNIT_DIR"; }
+
+write_service_template() {
+  ensure_dirs
+  local tmp="$SERVICE_TEMPLATE.tmp.$$"
+  cat > "$tmp" <<EOF
+[Unit]
+Description=pi-managed-agents routine %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$RUNNER %i
+TimeoutStartSec=1h
+Nice=10
+EOF
+  if [[ -f "$SERVICE_TEMPLATE" ]] && cmp -s "$tmp" "$SERVICE_TEMPLATE"; then
+    rm -f "$tmp"
+  else
+    mv "$tmp" "$SERVICE_TEMPLATE"
+  fi
+}
+
+write_timer() {
+  local name="$1" calendar="$2"
+  cat > "$UNIT_DIR/pi-agent-job-$name.timer" <<EOF
+[Unit]
+Description=pi-managed-agents timer: $name
+
+[Timer]
+OnCalendar=$calendar
+Persistent=true
+RandomizedDelaySec=30
+Unit=pi-agent-job@$name.service
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
+parse_target() {
+  local spec="$1"
+  [[ -n "$spec" ]] || { TARGET_TYPE=""; TARGET_ID=""; return 0; }
+  TARGET_TYPE="${spec%%:*}"
+  TARGET_ID="${spec#*:}"
+  [[ "$TARGET_TYPE" == "user" || "$TARGET_TYPE" == "chat" ]] \
+    || die "--target must be user:ou_xxx or chat:oc_xxx"
+  [[ -n "$TARGET_ID" && "$TARGET_ID" != "$spec" ]] \
+    || die "--target must be user:ou_xxx or chat:oc_xxx"
+}
+
+add_job() {
+  local name="${1:-}"
+  shift || true
+  [[ -n "$name" ]] || die "job name is required"
+  [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] \
+    || die "job name may only contain letters, digits, dot, underscore, hyphen"
+
+  local calendar="" prompt="" prompt_file="" workspace="$HOME/agent-workspace"
+  local target="$DEFAULT_TARGET" tools="Read Grep Glob" timeout="15m"
+  local push="always" silent_marker="[SILENT]" enable=1
+  local provider="" model="" base_url="" session_id="" sandbox="local" context="40" eager=0
+
+  while (($#)); do
+    case "$1" in
+      --calendar) calendar="${2:?--calendar requires a value}"; shift 2 ;;
+      --prompt) prompt="${2:?--prompt requires a value}"; shift 2 ;;
+      --prompt-file) prompt_file="${2:?--prompt-file requires a value}"; shift 2 ;;
+      --workspace) workspace="${2:?--workspace requires a value}"; shift 2 ;;
+      --target) target="${2:?--target requires a value}"; shift 2 ;;
+      --tools) tools="${2:?--tools requires a value}"; shift 2 ;;
+      --timeout) timeout="${2:?--timeout requires a value}"; shift 2 ;;
+      --push) push="${2:?--push requires a value}"; shift 2 ;;
+      --silent-marker) silent_marker="${2:?--silent-marker requires a value}"; shift 2 ;;
+      --provider) provider="${2:?--provider requires a value}"; shift 2 ;;
+      --model) model="${2:?--model requires a value}"; shift 2 ;;
+      --base-url) base_url="${2:?--base-url requires a value}"; shift 2 ;;
+      --session) session_id="${2:?--session requires a value}"; shift 2 ;;
+      --sandbox) sandbox="${2:?--sandbox requires a value}"; shift 2 ;;
+      --context) context="${2:?--context requires a value}"; shift 2 ;;
+      --eager) eager=1; shift ;;
+      --no-enable) enable=0; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+
+  [[ -n "$calendar" ]] || die "--calendar is required"
+  [[ -n "$prompt" || -n "$prompt_file" ]] || die "--prompt or --prompt-file is required"
+  [[ "$push" =~ ^(always|failure|nonempty|never)$ ]] || die "--push must be always|failure|nonempty|never"
+  [[ "$sandbox" =~ ^(local|docker)$ ]] || die "--sandbox must be local or docker"
+  parse_target "$target"
+  mkdir -p "$JOBS_DIR"
+
+  local job_file="$JOBS_DIR/$name.env"
+  local prompt_path="$JOBS_DIR/$name.prompt.txt"
+  if [[ -n "$prompt_file" ]]; then
+    cp -- "$prompt_file" "$prompt_path"
+  else
+    printf '%s\n' "$prompt" > "$prompt_path"
+  fi
+
+  {
+    printf 'NAME=%q\n' "$name"
+    printf 'CALENDAR=%q\n' "$calendar"
+    printf 'PROMPT_FILE=%q\n' "$prompt_path"
+    printf 'WORKSPACE=%q\n' "$workspace"
+    [[ -n "$TARGET_TYPE" ]] && printf 'TARGET_TYPE=%q\n' "$TARGET_TYPE"
+    [[ -n "$TARGET_ID" ]] && printf 'TARGET_ID=%q\n' "$TARGET_ID"
+    printf 'ALLOWED_TOOLS=%q\n' "$tools"
+    printf 'TIMEOUT=%q\n' "$timeout"
+    printf 'PUSH_ON=%q\n' "$push"
+    printf 'SILENT_MARKER=%q\n' "$silent_marker"
+    printf 'SANDBOX=%q\n' "$sandbox"
+    printf 'CONTEXT_WINDOW=%q\n' "$context"
+    (( eager )) && printf 'EAGER=1\n'
+    [[ -n "$provider" ]] && printf 'PROVIDER=%q\n' "$provider"
+    [[ -n "$model" ]] && printf 'MODEL=%q\n' "$model"
+    [[ -n "$base_url" ]] && printf 'BASE_URL=%q\n' "$base_url"
+    [[ -n "$session_id" ]] && printf 'SESSION_ID=%q\n' "$session_id"
+  } > "$job_file"
+  chmod 600 "$job_file" "$prompt_path"
+
+  write_service_template
+  write_timer "$name" "$calendar"
+  systemctl --user daemon-reload
+
+  if (( enable )); then
+    systemctl --user enable --now "pi-agent-job-$name.timer"
+    echo "job saved and timer enabled: $name"
+  else
+    echo "job saved; timer not enabled: $name"
+  fi
+  echo "  definition: $job_file"
+  echo "  prompt:     $prompt_path"
+  echo "  run now:    pi-agent-schedule run $name"
+}
+
+list_jobs() {
+  ensure_dirs
+  write_service_template
+  shopt -s nullglob
+  local found=0
+  for f in "$JOBS_DIR"/*.env; do
+    found=1
+    (
+      set -a
+      # shellcheck disable=SC1090
+      source "$f"
+      set +a
+      printf '%-24s %-24s push=%-8s target=%s:%s\n' \
+        "$NAME" "$CALENDAR" "$PUSH_ON" "${TARGET_TYPE:-}" "${TARGET_ID:-}"
+    )
+  done
+  (( found )) || echo "no routines configured"
+  echo
+  systemctl --user list-timers 'pi-agent-job-*.timer' --no-pager || true
+}
+
+run_job() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "job name is required"
+  [[ -x "$RUNNER" ]] || die "runner not executable: $RUNNER"
+  exec "$RUNNER" "$name"
+}
+
+logs_job() {
+  local name="${1:-}" lines="${2:-80}"
+  [[ -n "$name" ]] || die "job name is required"
+  local dir="$HOME/.local/state/pi-agent/jobs/$name"
+  local f
+  f="$(ls -1t "$dir"/*.log 2>/dev/null | head -n1 || true)"
+  [[ -n "$f" ]] || die "no logs for $name"
+  echo "== $f =="
+  tail -n "$lines" "$f"
+}
+
+enable_job() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "job name is required"
+  systemctl --user daemon-reload
+  systemctl --user enable --now "pi-agent-job-$name.timer"
+  systemctl --user list-timers "pi-agent-job-$name.timer" --no-pager
+}
+
+disable_job() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "job name is required"
+  systemctl --user disable --now "pi-agent-job-$name.timer"
+}
+
+remove_job() {
+  local name="${1:-}"
+  shift || true
+  [[ -n "$name" ]] || die "job name is required"
+  local yes=0
+  while (($#)); do
+    case "$1" in
+      --yes) yes=1; shift ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+
+  systemctl --user disable --now "pi-agent-job-$name.timer" 2>/dev/null || true
+  rm -f "$UNIT_DIR/pi-agent-job-$name.timer"
+  systemctl --user daemon-reload
+
+  if (( ! yes )); then
+    read -r -p "Remove routine definition and prompt for '$name'? [y/N] " ans
+    [[ "$ans" == "y" || "$ans" == "Y" ]] || {
+      echo "timer removed; job files kept"
+      return 0
+    }
+  fi
+  rm -f "$JOBS_DIR/$name.env" "$JOBS_DIR/$name.prompt.txt"
+  echo "removed routine: $name"
+}
+
+sync_jobs() {
+  ensure_dirs
+  write_service_template
+  shopt -s nullglob
+  local f
+  for f in "$JOBS_DIR"/*.env; do
+    (
+      set -a
+      # shellcheck disable=SC1090
+      source "$f"
+      set +a
+      write_timer "$NAME" "$CALENDAR"
+    )
+  done
+  systemctl --user daemon-reload
+  for f in "$JOBS_DIR"/*.env; do
+    (
+      set -a
+      # shellcheck disable=SC1090
+      source "$f"
+      set +a
+      systemctl --user enable --now "pi-agent-job-$NAME.timer" >/dev/null 2>&1 || true
+    )
+  done
+  echo "timers synced from $JOBS_DIR"
+  systemctl --user list-timers 'pi-agent-job-*.timer' --no-pager || true
+}
+
+command="${1:-}"
+[[ $# -gt 0 ]] && shift
+
+case "$command" in
+  add) add_job "$@" ;;
+  list|ls) list_jobs ;;
+  run) run_job "$@" ;;
+  logs) logs_job "$@" ;;
+  enable) enable_job "$@" ;;
+  disable) disable_job "$@" ;;
+  remove|rm) remove_job "$@" ;;
+  sync) sync_jobs ;;
+  -h|--help|"") usage ;;
+  *) die "unknown command: $command" ;;
+esac

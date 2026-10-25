@@ -107,6 +107,7 @@ export async function measureTtftOnce(
         new LocalSandbox({
           provisionDelayMs,
           rootDir: path.join(os.tmpdir(), "pi-managed-bench", randomUUID()),
+          destroyRoot: true,
         }),
     ),
   });

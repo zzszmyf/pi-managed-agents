@@ -110,6 +110,36 @@ Commands: `/help`, `/new`, `/session`, `/sessions`, `/events [n]`, `/model`,
 `/quit`. With `--session <id>` the shell reuses an existing session and wakes a
 new harness automatically if the last turn was interrupted mid-tool-call.
 
+## Routines (scheduled runs)
+
+`scripts/pi-agent-run-job` is a drop-in sibling of this machine's existing
+`cloud-agent-run-job`: same job env shape, same `flock` / timeout / log
+retention, same `PUSH_ON` / `[SILENT]` / idempotency-key push policy. The
+difference is the agent: it runs `pi-managed-agents` against a persistent
+routine session instead of `claude -p`.
+
+`scripts/pi-agent-schedule` creates systemd user timers under its own
+`pi-agent-job-*` prefix, so it never touches existing `cloud-agent-*` jobs.
+
+```bash
+npm run build
+ln -sf "$PWD/scripts/pi-agent-run-job" ~/.local/bin/pi-agent-run-job
+ln -sf "$PWD/scripts/pi-agent-schedule" ~/.local/bin/pi-agent-schedule
+
+pi-agent-schedule add demo-files \
+  --calendar "*-*-* 09:30:00" \
+  --prompt-file ./examples/routines/demo-files.prompt.txt \
+  --workspace ~/agent-workspace \
+  --target user:ou_xxxxxxxxxxxxxxxx \
+  --tools "Read Grep Glob" --push always
+
+PUSH_DRY_RUN=1 pi-agent-schedule run demo-files
+pi-agent-schedule logs demo-files
+```
+
+See [examples/routines/README.md](examples/routines/README.md) for the job
+fields, tool-to-hand mapping and timer management.
+
 ### CLI
 
 ```bash

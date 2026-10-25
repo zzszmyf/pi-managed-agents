@@ -1,0 +1,10 @@
+Check this server's health:
+
+- disk usage: df -h
+- memory: free -h
+- load: uptime
+- docker: containers that exited or are restarting
+- bridge: systemctl --user status lark-channel-bridge.bot.claude.service
+
+Reply in concise Chinese, under 200 characters. If everything is normal, reply
+with one short sentence. If something is clearly wrong, include the key numbers.

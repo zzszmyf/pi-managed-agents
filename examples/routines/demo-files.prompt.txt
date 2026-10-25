@@ -1,0 +1,7 @@
+List the top-level files and directories in this workspace. Then write a short
+summary of what this workspace seems to be for.
+
+Rules:
+- Use read_file and list_files only.
+- Keep the final answer under 120 Chinese characters (or under 80 English words).
+- If the workspace is empty or unreadable, reply exactly [SILENT].

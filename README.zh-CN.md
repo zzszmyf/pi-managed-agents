@@ -94,6 +94,35 @@ pi-managed-agents chat --provider anthropic --model deepseek-flash[1m] \
 交互命令：`/help`、`/new`、`/session`、`/sessions`、`/events [n]`、`/model`、`/quit`。
 加 `--session <id>` 可以接着已有会话聊；如果上一轮停在 tool call 中间，启动时会自动 `wake`。
 
+## Routines（定时任务）
+
+`scripts/pi-agent-run-job` 是这台机器现有 `cloud-agent-run-job` 的同构版本：
+同样的 job env 格式、`flock`、超时、日志保留，同样的 `PUSH_ON` / `[SILENT]` /
+idempotency key 推送策略。区别是 agent：它跑的是 `pi-managed-agents`，
+并且每次追加到同一个持久 session，而不是 `claude -p` 一次性执行。
+
+`scripts/pi-agent-schedule` 使用独立的 `pi-agent-job-*` systemd timer 前缀，
+不会动现有的 `cloud-agent-*` 任务。
+
+```bash
+npm run build
+ln -sf "$PWD/scripts/pi-agent-run-job" ~/.local/bin/pi-agent-run-job
+ln -sf "$PWD/scripts/pi-agent-schedule" ~/.local/bin/pi-agent-schedule
+
+pi-agent-schedule add demo-files \
+  --calendar "*-*-* 09:30:00" \
+  --prompt-file ./examples/routines/demo-files.prompt.txt \
+  --workspace ~/agent-workspace \
+  --target user:ou_xxxxxxxxxxxxxxxx \
+  --tools "Read Grep Glob" --push always
+
+PUSH_DRY_RUN=1 pi-agent-schedule run demo-files
+pi-agent-schedule logs demo-files
+```
+
+字段说明、工具到 hand 的映射、timer 管理见
+[examples/routines/README.md](examples/routines/README.md)。
+
 ## 常用命令
 
 ```bash
