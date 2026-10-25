@@ -123,6 +123,25 @@ pi-agent-schedule logs demo-files
 字段说明、工具到 hand 的映射、timer 管理见
 [examples/routines/README.md](examples/routines/README.md)。
 
+## Bridge adapter（飞书聊天 → harness）
+
+`lark-channel-bridge` 只支持 Claude 和 Codex。`src/bridge/claude-shim.ts` 是一个
+Claude 兼容 shim，让现有 bridge 不用改代码就能驱动 pi-managed-agents：
+
+```bash
+npm run build
+./scripts/install-pi-bridge install --dry-run   # 预览
+./scripts/install-pi-bridge install             # 写入 shim + systemd drop-in
+./scripts/install-pi-bridge install --apply     # 重启 bridge
+```
+
+bridge 继续负责消息路由、会话连续性、排队、流式卡片、附件和访问控制；shim 负责
+把 bridge 的 `claude -p --output-format stream-json` 协议翻译成 pi harness 调用，
+并把 `Bash`/`Read`/`Write`/`Glob` 映射回 sandbox hands。
+
+协议映射、权限模式、备份/回滚和已知限制见
+[docs/bridge-adapter.md](docs/bridge-adapter.md)。
+
 ## 常用命令
 
 ```bash

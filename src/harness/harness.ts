@@ -22,7 +22,7 @@ import { PolicySandbox } from "../sandbox/policy.js";
 import type { RunResult, SandboxResources } from "../types.js";
 import { createExecuteTool, EXECUTE_TOOL_NAME } from "./tools.js";
 
-const DEFAULT_SYSTEM_PROMPT = `You are a stateless agent harness around a language model.
+export const DEFAULT_HARNESS_SYSTEM_PROMPT = `You are a stateless agent harness around a language model.
 
 You can only act through the "execute" tool. Each call names a hand and passes
 an input object. The hand returns a string. Use small, verifiable steps. When
@@ -46,9 +46,9 @@ export interface HarnessOptions {
   /** Called for every streamed assistant text delta. */
   onTextDelta?: (delta: string) => void;
   /** Called when a tool call starts executing. */
-  onToolStart?: (toolName: string, args: unknown) => void;
+  onToolStart?: (toolCallId: string, toolName: string, args: unknown) => void;
   /** Called when a tool call finishes. */
-  onToolEnd?: (toolName: string, ok: boolean, output: string) => void;
+  onToolEnd?: (toolCallId: string, toolName: string, ok: boolean, output: string) => void;
   /** Test hook: observe every agent event after it has been recorded. */
   onEvent?: (event: AgentEvent) => void | Promise<void>;
 }
@@ -73,8 +73,8 @@ export class Harness {
   private readonly allowedHands?: readonly string[];
   private readonly onFirstToken?: (milliseconds: number) => void;
   private readonly onTextDelta?: (delta: string) => void;
-  private readonly onToolStart?: (toolName: string, args: unknown) => void;
-  private readonly onToolEnd?: (toolName: string, ok: boolean, output: string) => void;
+  private readonly onToolStart?: (toolCallId: string, toolName: string, args: unknown) => void;
+  private readonly onToolEnd?: (toolCallId: string, toolName: string, ok: boolean, output: string) => void;
   private readonly onEvent?: (event: AgentEvent) => void | Promise<void>;
 
   constructor(options: HarnessOptions) {
@@ -86,7 +86,7 @@ export class Harness {
     this.allowedHands = options.allowedHands;
     this.model = options.model;
     this.streamFn = options.streamFn;
-    this.systemPrompt = options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+    this.systemPrompt = options.systemPrompt ?? DEFAULT_HARNESS_SYSTEM_PROMPT;
     this.contextPolicy = options.contextPolicy ?? new WindowContextPolicy(40);
     this.eagerProvision = options.eagerProvision ?? false;
     this.sandboxResources = options.sandboxResources;
@@ -98,7 +98,11 @@ export class Harness {
   }
 
   /** Start a new user turn in an existing session. */
-  async run(sessionId: string, input: string): Promise<RunResult> {
+  async run(
+    sessionId: string,
+    input: string,
+    options: { recoverOrphans?: boolean } = {},
+  ): Promise<RunResult> {
     return withSessionLock(sessionId, async () => {
       const runId = `run_${randomUUID()}`;
       const startedAt = performance.now();
@@ -110,7 +114,12 @@ export class Harness {
         resumed: false,
       });
 
-      const messages = await this.loadMessages(sessionId);
+      let messages = await this.loadMessages(sessionId);
+      if (options.recoverOrphans) {
+        // A previous bridge turn may have been killed mid-tool. Replay the
+        // orphaned calls so the new user message lands on a valid transcript.
+        messages = (await this.recoverOrphanToolCalls(sessionId, messages)).messages;
+      }
       const agent = this.createAgent(sessionId, runId, messages, startedAt, (milliseconds) => {
         firstTokenMs = milliseconds;
         this.onFirstToken?.(milliseconds);
@@ -256,9 +265,9 @@ export class Harness {
         }
         this.onTextDelta?.(event.assistantMessageEvent.delta);
       } else if (event.type === "tool_execution_start") {
-        this.onToolStart?.(event.toolName, event.args);
+        this.onToolStart?.(event.toolCallId, event.toolName, event.args);
       } else if (event.type === "tool_execution_end") {
-        this.onToolEnd?.(event.toolName, !event.isError, toolResultText(event.result));
+        this.onToolEnd?.(event.toolCallId, event.toolName, !event.isError, toolResultText(event.result));
       }
       await this.onEvent?.(event);
     });

@@ -157,10 +157,10 @@ export class InteractiveShell {
         this.streamedThisTurn = true;
         stdout.write(delta);
       },
-      onToolStart: (toolName, args) => {
+      onToolStart: (_toolCallId, toolName, args) => {
         stdout.write(`\n  [tool] ${toolName} ${preview(args)}\n  `);
       },
-      onToolEnd: (toolName, ok, output) => {
+      onToolEnd: (_toolCallId, toolName, ok, output) => {
         stdout.write(`  [tool] ${toolName} ${ok ? "ok" : "error"}: ${preview(output)}\n  `);
       },
     });

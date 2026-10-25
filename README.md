@@ -140,6 +140,27 @@ pi-agent-schedule logs demo-files
 See [examples/routines/README.md](examples/routines/README.md) for the job
 fields, tool-to-hand mapping and timer management.
 
+## Bridge adapter (Feishu chat → harness)
+
+`lark-channel-bridge` only supports Claude and Codex. `src/bridge/claude-shim.ts`
+is a Claude-compatible shim that lets the existing bridge drive
+pi-managed-agents without patching it:
+
+```bash
+npm run build
+./scripts/install-pi-bridge install --dry-run   # preview
+./scripts/install-pi-bridge install             # write shim + systemd drop-in
+./scripts/install-pi-bridge install --apply     # restart the bridge
+```
+
+The bridge keeps its message routing, session continuity, queueing, streaming
+cards, attachments and access control. The shim translates the bridge's
+`claude -p --output-format stream-json` protocol into a pi harness run and maps
+`Bash`/`Read`/`Write`/`Glob` back to sandbox hands.
+
+See [docs/bridge-adapter.md](docs/bridge-adapter.md) for the protocol mapping,
+permission modes, backup/revert steps and known limits.
+
 ### CLI
 
 ```bash

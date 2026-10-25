@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# install-pi-bridge — opt-in adapter that makes lark-channel-bridge run
+# pi-managed-agents instead of Claude Code.
+#
+# It does this without patching the bridge:
+#   1. put a `claude` shim in a private directory
+#   2. add a systemd drop-in that puts that directory first in PATH and sets
+#      PI_BRIDGE_AGENT=pi
+#   3. leave the real claude binary in place for delegation
+#
+# Usage:
+#   install-pi-bridge install [--apply] [--dry-run]
+#   install-pi-bridge uninstall [--apply] [--dry-run]
+#   install-pi-bridge status
+#
+# Without --apply, config is written but the bridge service is not restarted.
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+REPO="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+SERVICE="${BRIDGE_SERVICE:-lark-channel-bridge.bot.claude.service}"
+SHIM_DIR="${PI_BRIDGE_SHIM_DIR:-$HOME/.local/bin/pi-bridge}"
+DROPIN_DIR="$HOME/.config/systemd/user/$SERVICE.d"
+DROPIN="$DROPIN_DIR/pi-adapter.conf"
+SESSIONS_DIR="${PI_BRIDGE_SESSIONS_DIR:-$HOME/.local/state/pi-agent/bridge-sessions}"
+REAL_CLAUDE="${PI_REAL_CLAUDE_BIN:-$(command -v claude || true)}"
+
+die() { echo "error: $*" >&2; exit 2; }
+
+usage() {
+  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+unit_path() {
+  local path
+  path="$(systemctl --user cat "$SERVICE" 2>/dev/null \
+    | sed -n 's/^Environment="PATH=\(.*\)"$/\1/p' \
+    | tail -n1)"
+  if [[ -n "$path" ]]; then
+    printf '%s' "$path"
+  else
+    printf '%s' "$PATH"
+  fi
+}
+
+dropin_content() {
+  local path
+  path="$(unit_path)"
+  cat <<EOF
+[Service]
+Environment="PI_BRIDGE_AGENT=pi"
+Environment="PI_REAL_CLAUDE_BIN=$REAL_CLAUDE"
+Environment="PI_BRIDGE_SESSIONS_DIR=$SESSIONS_DIR"
+Environment="PATH=$SHIM_DIR:$path"
+EOF
+}
+
+ensure_real_claude() {
+  [[ -n "$REAL_CLAUDE" ]] || die "claude not found; set PI_REAL_CLAUDE_BIN"
+  local real_resolved shim_resolved
+  real_resolved="$(readlink -f "$REAL_CLAUDE" 2>/dev/null || echo "$REAL_CLAUDE")"
+  shim_resolved="$(readlink -f "$REPO/dist/bridge/claude-shim.js" 2>/dev/null || true)"
+  if [[ -n "$shim_resolved" && "$real_resolved" == "$shim_resolved" ]]; then
+    die "PI_REAL_CLAUDE_BIN resolves to the shim itself; point it at the real claude binary"
+  fi
+}
+
+install_shim() {
+  local dry="$1" apply="$2"
+  ensure_real_claude
+
+  if [[ ! -f "$REPO/dist/bridge/claude-shim.js" ]]; then
+    if (( dry )); then
+      echo "[dry-run] would build: npm run build"
+    else
+      echo "building pi-managed-agents..."
+      (cd "$REPO" && npm run build)
+    fi
+  fi
+
+  echo "shim:     $SHIM_DIR/claude -> $REPO/dist/bridge/claude-shim.js"
+  echo "real:     $REAL_CLAUDE"
+  echo "service:  $SERVICE"
+  echo "sessions: $SESSIONS_DIR"
+  echo "drop-in:  $DROPIN"
+  echo
+  echo "--- $DROPIN ---"
+  dropin_content
+  echo "----------------"
+  echo
+
+  if (( dry )); then
+    echo "[dry-run] no files written"
+    return 0
+  fi
+
+  mkdir -p "$SHIM_DIR" "$DROPIN_DIR" "$SESSIONS_DIR"
+  chmod +x "$REPO/dist/bridge/claude-shim.js" 2>/dev/null || true
+  ln -sf "$REPO/dist/bridge/claude-shim.js" "$SHIM_DIR/claude"
+
+  # Switching agents makes the bridge's existing Claude session ids
+  # meaningless to the shim. Keep a copy before the first switch.
+  local sessions="$HOME/.lark-channel/profiles/claude/sessions.json"
+  if [[ -f "$sessions" ]]; then
+    local backup="$sessions.bak-pi-$(date +%Y%m%d-%H%M%S)"
+    cp -a "$sessions" "$backup"
+    echo "backed up bridge sessions: $backup"
+  fi
+
+  dropin_content > "$DROPIN"
+  chmod 644 "$DROPIN"
+  systemctl --user daemon-reload
+
+  echo "drop-in installed."
+  if (( apply )); then
+    systemctl --user restart "$SERVICE"
+    echo "restarted: $SERVICE"
+  else
+    echo "not restarted. Apply with:"
+    echo "  systemctl --user restart $SERVICE"
+  fi
+  echo
+  echo "check: install-pi-bridge status"
+}
+
+uninstall_shim() {
+  local dry="$1" apply="$2"
+  echo "removing: $DROPIN"
+  echo "removing: $SHIM_DIR/claude"
+  if (( dry )); then
+    echo "[dry-run] no files removed"
+    return 0
+  fi
+  rm -f "$DROPIN" "$SHIM_DIR/claude"
+  rmdir "$SHIM_DIR" 2>/dev/null || true
+  rmdir "$DROPIN_DIR" 2>/dev/null || true
+  systemctl --user daemon-reload
+  echo "drop-in removed."
+  if (( apply )); then
+    systemctl --user restart "$SERVICE"
+    echo "restarted: $SERVICE"
+  else
+    echo "not restarted. Apply with:"
+    echo "  systemctl --user restart $SERVICE"
+  fi
+  echo
+  echo "To restore the previous Claude session map, copy a backup:"
+  echo "  ls ~/.lark-channel/profiles/claude/sessions.json.bak-pi-*"
+}
+
+status() {
+  echo "service: $SERVICE"
+  systemctl --user is-active "$SERVICE" 2>/dev/null || true
+  if [[ -f "$DROPIN" ]]; then
+    echo "drop-in: present ($DROPIN)"
+    cat "$DROPIN"
+  else
+    echo "drop-in: absent"
+  fi
+  if [[ -L "$SHIM_DIR/claude" ]]; then
+    echo "shim: $(readlink -f "$SHIM_DIR/claude")"
+  else
+    echo "shim: absent"
+  fi
+}
+
+command="${1:-}"
+shift || true
+apply=0
+dry=0
+while (($#)); do
+  case "$1" in
+    --apply) apply=1; shift ;;
+    --dry-run) dry=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown option: $1" ;;
+  esac
+done
+
+case "$command" in
+  install) install_shim "$dry" "$apply" ;;
+  uninstall) uninstall_shim "$dry" "$apply" ;;
+  status) status ;;
+  -h|--help|"") usage ;;
+  *) die "unknown command: $command" ;;
+esac

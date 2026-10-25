@@ -8,6 +8,7 @@
   "files": [
     "dist",
     "scripts",
+    "docs",
     "examples/routines",
     "README.md",
     "README.zh-CN.md",
@@ -15,7 +16,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "postbuild": "node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
+    "postbuild": "node -e \"const fs=require('node:fs'); for (const f of ['dist/cli.js','dist/bridge/claude-shim.js']) fs.chmodSync(f,0o755)\"",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --import tsx --test test/*.test.ts",
     "chat": "tsx src/cli.ts chat",
@@ -49,7 +50,8 @@
     "typescript": "^5.9.3"
   },
   "bin": {
-    "pi-managed-agents": "./dist/cli.js"
+    "pi-managed-agents": "./dist/cli.js",
+    "pi-claude-shim": "./dist/bridge/claude-shim.js"
   },
   "repository": {
     "type": "git",
