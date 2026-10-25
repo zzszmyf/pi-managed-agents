@@ -1,0 +1,45 @@
+{
+  "name": "pi-managed-agents",
+  "version": "0.1.0",
+  "description": "A minimal reproduction of Anthropic's Managed Agents architecture (session / harness / sandbox) built on pi-agent-core",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test test/*.test.ts",
+    "demo": "tsx examples/demo.ts",
+    "demo:crash": "tsx examples/crash-recovery.ts",
+    "demo:security": "tsx examples/security-demo.ts",
+    "demo:many": "tsx examples/many-brains.ts",
+    "bench": "tsx src/bench/ttft.ts"
+  },
+  "keywords": [
+    "agents",
+    "harness",
+    "pi-agent",
+    "managed-agents",
+    "sandbox"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  },
+  "bin": {
+    "pi-managed-agents": "./dist/cli.js"
+  }
+}
