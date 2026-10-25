@@ -1,5 +1,7 @@
 # pi-managed-agents
 
+English | [简体中文](README.zh-CN.md)
+
 A minimal, runnable reproduction of the architecture described in Anthropic's
 [**Scaling Managed Agents: Decoupling the brain from the hands**](https://www.anthropic.com/research/managed-agents)
 (April 2026), built on [`@earendil-works/pi-agent-core`](https://github.com/earendil-works/pi).
