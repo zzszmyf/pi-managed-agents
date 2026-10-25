@@ -12,7 +12,7 @@ import { FileSessionStore } from "./session/store.js";
 import { WindowContextPolicy } from "./session/context.js";
 import { Harness } from "./harness/harness.js";
 import { createFauxRuntime } from "./model/faux.js";
-import { createRealRuntime, type RealProvider } from "./model/real.js";
+import { createRealRuntime, createAnthropicCompatibleRuntime, type RealProvider } from "./model/real.js";
 import { LocalSandbox } from "./sandbox/local.js";
 import { DockerSandbox } from "./sandbox/docker.js";
 import { FactorySandboxProvider, SandboxRuntime } from "./sandbox/runtime.js";
@@ -31,6 +31,7 @@ Usage:
 Options:
   --provider <faux|anthropic|openai>  Model provider (default: faux)
   --model <id>                        Model id for real providers
+  --base-url <url>                    Anthropic-compatible endpoint (requires --model)
   --session <id>                      Reuse an existing session instead of creating one
   --sandbox <local|docker>            Hand implementation (default: local)
   --eager                             Provision the sandbox before the first model request
@@ -51,6 +52,7 @@ function makeModel(
   provider: string,
   modelId: string | undefined,
   script: "run" | "resume",
+  baseUrl?: string,
 ) {
   if (provider === "faux") {
     const responses: FauxResponseStep[] =
@@ -67,6 +69,15 @@ function makeModel(
   }
   if (provider !== "anthropic" && provider !== "openai") {
     throw new Error(`Unknown provider: ${provider}. Use faux, anthropic or openai.`);
+  }
+  if (baseUrl) {
+    if (provider !== "anthropic") {
+      throw new Error("--base-url is currently supported for the anthropic provider only");
+    }
+    if (!modelId) {
+      throw new Error("--base-url requires --model, because the endpoint is not in the model catalog");
+    }
+    return createAnthropicCompatibleRuntime({ baseUrl, modelId });
   }
   return createRealRuntime(provider as RealProvider, modelId);
 }
@@ -91,6 +102,7 @@ async function main(): Promise<void> {
     options: {
       provider: { type: "string", default: "faux" },
       model: { type: "string" },
+      "base-url": { type: "string" },
       session: { type: "string" },
       sandbox: { type: "string", default: "local" },
       eager: { type: "boolean", default: false },
@@ -153,7 +165,7 @@ async function main(): Promise<void> {
     if (values.session && !(await store.exists(values.session))) {
       throw new Error(`Unknown session: ${values.session}`);
     }
-    const runtime = makeModel(values.provider, values.model, "run");
+    const runtime = makeModel(values.provider, values.model, "run", values["base-url"]);
     const sandbox = makeSandbox(values.sandbox, session.sessionId);
     const harness = new Harness({
       sessionStore: store,
@@ -186,7 +198,7 @@ async function main(): Promise<void> {
     const sessionId = positionals[1] ?? values.session;
     if (!sessionId) throw new Error("resume requires a session id");
     if (!(await store.exists(sessionId))) throw new Error(`Unknown session: ${sessionId}`);
-    const runtime = makeModel(values.provider, values.model, "resume");
+    const runtime = makeModel(values.provider, values.model, "resume", values["base-url"]);
     const sandbox = makeSandbox(values.sandbox, sessionId);
     const harness = new Harness({
       sessionStore: store,

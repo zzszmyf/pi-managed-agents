@@ -78,6 +78,13 @@ npx tsx src/cli.ts resume <sessionId>
 ANTHROPIC_API_KEY=... npx tsx src/cli.ts run "list the files" --provider anthropic --model <model-id>
 OPENAI_API_KEY=...    npx tsx src/cli.ts run "list the files" --provider openai    --model <model-id>
 
+# Anthropic Messages-compatible endpoint not in the catalog
+# (DeepSeek, an internal gateway, ...). Auth still comes from
+# ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY.
+ANTHROPIC_AUTH_TOKEN=... npx tsx src/cli.ts run "list the files" \
+  --provider anthropic --model deepseek-flash[1m] \
+  --base-url https://api.deepseek.com/anthropic
+
 # eager provisioning instead of lazy
 npx tsx src/cli.ts run "..." --eager
 

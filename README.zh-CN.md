@@ -65,6 +65,12 @@ npx tsx src/cli.ts resume <sessionId>
 ANTHROPIC_API_KEY=... npx tsx src/cli.ts run "list the files" --provider anthropic --model <model-id>
 OPENAI_API_KEY=...    npx tsx src/cli.ts run "list the files" --provider openai    --model <model-id>
 
+# Anthropic Messages 兼容端点（DeepSeek、内部网关等），模型不在 catalog 里也能用
+# 认证仍然走 ANTHROPIC_AUTH_TOKEN 或 ANTHROPIC_API_KEY
+ANTHROPIC_AUTH_TOKEN=... npx tsx src/cli.ts run "list the files" \
+  --provider anthropic --model deepseek-flash[1m] \
+  --base-url https://api.deepseek.com/anthropic
+
 # Docker sandbox
 npx tsx src/cli.ts run "..." --sandbox docker
 ```
