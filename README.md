@@ -360,6 +360,7 @@ Docker.
 
 ## Related projects
 
+- [`feishu-agent-stack`](https://github.com/zzszmyf/feishu-agent-stack) — index of the Feishu/Lark coding-agent toolchain.
 - [`cc-session`](https://github.com/zzszmyf/cc-session) — tmux + ttyd session manager for interactive Claude Code.
 - [`feishu-agent-scheduler`](https://github.com/zzszmyf/feishu-agent-scheduler) — systemd-timer jobs that push Claude Code results to Feishu/Lark.
 - [`docs/bridge-adapter.md`](docs/bridge-adapter.md) — how `lark-channel-bridge` drives this harness through a Claude-compatible shim.
