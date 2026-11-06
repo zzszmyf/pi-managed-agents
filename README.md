@@ -358,6 +358,12 @@ Docker is optional. `DockerSandbox` is exercised manually (or in CI with
 `TEST_DOCKER=1` if you add such a test); the default suite does not require
 Docker.
 
+## Related projects
+
+- [`cc-session`](https://github.com/zzszmyf/cc-session) — tmux + ttyd session manager for interactive Claude Code.
+- [`feishu-agent-scheduler`](https://github.com/zzszmyf/feishu-agent-scheduler) — systemd-timer jobs that push Claude Code results to Feishu/Lark.
+- [`docs/bridge-adapter.md`](docs/bridge-adapter.md) — how `lark-channel-bridge` drives this harness through a Claude-compatible shim.
+
 ## References
 
 - Anthropic, [Scaling Managed Agents: Decoupling the brain from the hands](https://www.anthropic.com/research/managed-agents)

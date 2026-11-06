@@ -178,6 +178,12 @@ npx tsx src/cli.ts run "..." --sandbox docker
 - `SandboxUnavailableError` 表示容器没了，转成 tool error 并换新；
   `SandboxExecutionError` 表示命令失败，容器还在，错误原样回给模型。
 
+## 相关项目
+
+- [`cc-session`](https://github.com/zzszmyf/cc-session)：tmux + ttyd 的 Claude Code 会话管理器。
+- [`feishu-agent-scheduler`](https://github.com/zzszmyf/feishu-agent-scheduler)：systemd timer 定时跑 Claude Code，并把结果推送到飞书。
+- [`docs/bridge-adapter.md`](docs/bridge-adapter.md)：`lark-channel-bridge` 如何通过 Claude 兼容 shim 驱动本 harness。
+
 ## 限制
 
 - `LocalSandbox` 的 `bash` 跑在宿主机上，只是开发 shim，**不是安全边界**。
